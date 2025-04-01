@@ -1,92 +1,266 @@
+import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
-from openpyxl import load_workbook
-import json
+from tkinter import Tk, Label, ttk, Frame, messagebox
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import heapq
+class SistemaRutas:
+    def __init__(self):
+        self.grafo = None
+        self.locaciones = None
+        self.inicializar_sistema()
+        
+    def inicializar_sistema(self):
+        try:
+            self.cargar_datos_desde_excel()
+            self.crear_interfaz()
+        except Exception as e:
+            messagebox.showerror("Error", f"Error al inicializar el sistema: {str(e)}")
+            
+    def cargar_datos_desde_excel(self):
+        """Carga datos desde archivo Excel y construye el grafo de conexiones"""
+        datos = pd.read_excel(
+            "Ecuador_Distancias.xlsx", 
+            sheet_name="CUADRO DE DISTANCIAS", 
+            header=2
+        )
+        self.locaciones = datos['CIUDAD'].tolist()
+        self.grafo = nx.Graph()
+        
+        for i in range(len(self.locaciones)):
+            for j in range(i + 1, len(self.locaciones)):
+                distancia = datos.iloc[i, j + 2]
+                if pd.notna(distancia) and distancia > 0:
+                    self.grafo.add_edge(
+                        self.locaciones[i], 
+                        self.locaciones[j], 
+                        distancia=distancia
+                    )
 
-# Cargar el archivo Excel
-wb = load_workbook("Ecuador_Distancias.xlsx", data_only=True)
-sheet = wb["CUADRO DE DISTANCIAS"]
+    def encontrar_mejor_ruta(self, inicio, destino):
+        """Implementa búsqueda de costo uniforme (UCS) para encontrar la mejor ruta"""
+        if inicio == destino:
+            return None, None, "⚠️ Origen y destino deben ser diferentes"
+            
+        try:
+            cola_prioridad = [(0, inicio, [inicio])]
+            visitados = set()
+            
+            while cola_prioridad:
+                costo_actual, ubicacion_actual, ruta = heapq.heappop(cola_prioridad)
+                
+                if ubicacion_actual == destino:
+                    return ruta, costo_actual, None
+                    
+                if ubicacion_actual in visitados:
+                    continue
+                    
+                visitados.add(ubicacion_actual)
+                
+                for siguiente in self.grafo[ubicacion_actual]:
+                    if siguiente not in visitados:
+                        nuevo_costo = costo_actual + self.grafo[ubicacion_actual][siguiente]['distancia']
+                        nueva_ruta = ruta + [siguiente]
+                        heapq.heappush(cola_prioridad, (nuevo_costo, siguiente, nueva_ruta))
+                        
+            return None, None, "❌ No existe ruta disponible"
+            
+        except Exception as e:
+            return None, None, f"❌ Error al calcular ruta: {str(e)}"
 
-# Leer los nombres de las ciudades (columna B, desde la fila 4 en adelante)
-ciudades = [sheet.cell(row=row, column=2).value for row in range(4, 44)]  # Ajusta el rango según tu archivo
+    def visualizar_ruta(self, ruta, costo_total):
+        """Visualiza la ruta en el mapa y muestra detalles"""
+        # Limpiar visualización anterior
+        for widget in self.frame_mapa.winfo_children():
+            widget.destroy()
+        for widget in self.frame_info.winfo_children():
+            widget.destroy()
+            
+        # Configurar visualización
+        figura = plt.figure(figsize=(10, 8))
+        posiciones = nx.spring_layout(self.grafo, seed=42, k=0.9)
+        
+        # Dibujar grafo base
+        nx.draw_networkx_nodes(
+            self.grafo, posiciones,
+            node_size=600,
+            node_color='lightblue',
+            edgecolors='navy'
+        )
+        nx.draw_networkx_edges(
+            self.grafo, posiciones,
+            width=1.0,
+            edge_color='gray',
+            alpha=0.5
+        )
+        nx.draw_networkx_labels(
+            self.grafo, posiciones,
+            font_size=8,
+            font_weight='bold'
+        )
+        
+        # Resaltar ruta seleccionada
+        if ruta:
+            conexiones_ruta = list(zip(ruta[:-1], ruta[1:]))
+            nx.draw_networkx_edges(
+                self.grafo, posiciones,
+                edgelist=conexiones_ruta,
+                width=3.0,
+                edge_color='crimson'
+            )
+            nx.draw_networkx_nodes(
+                self.grafo, posiciones,
+                nodelist=ruta,
+                node_color='lightcoral',
+                node_size=800
+            )
+            
+        # Mostrar mapa
+        canvas = FigureCanvasTkAgg(figura, master=self.frame_mapa)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill='both', expand=True)
+        
+        # Mostrar detalles de la ruta
+        if ruta:
+            self.mostrar_detalles_ruta(ruta, costo_total)
 
-# Crear un diccionario para almacenar las distancias
-distancias = {}
+    def mostrar_detalles_ruta(self, ruta, costo_total):
+        """Muestra información detallada de la ruta"""
+        # Título
+        Label(
+            self.frame_info,
+            text="📍 Detalles del Recorrido",
+            font=('Helvetica', 14, 'bold'),
+            fg='navy'
+        ).pack(pady=10)
+        
+        # Segmentos de la ruta
+        for i in range(len(ruta)-1):
+            origen = ruta[i]
+            destino = ruta[i+1]
+            distancia = self.grafo[origen][destino]['distancia']
+            
+            Label(
+                self.frame_info,
+                text=f"➡️ {origen} a {destino}: {distancia} km",
+                font=('Helvetica', 10),
+                fg='darkslategray'
+            ).pack(anchor='w', pady=2)
+            
+        # Distancia total
+        Label(
+            self.frame_info,
+            text=f"\n🏁 Distancia total: {costo_total} km",
+            font=('Helvetica', 12, 'bold'),
+            fg='crimson'
+        ).pack(pady=10)
 
-# Leer las distancias desde el Excel
-for row in range(4, 44):  # Ajusta el rango según las filas de tu archivo
-    ciudad_origen = sheet.cell(row=row, column=2).value  # Columna B tiene los nombres de las ciudades
-    distancias[ciudad_origen] = {
-        ciudades[col - 3]: sheet.cell(row=row, column=col).value for col in range(3, 43)  # Columnas C en adelante
-        if sheet.cell(row=row, column=col).value is not None
-    }
+    def crear_interfaz(self):
+        """Configura la interfaz gráfica del sistema"""
+        self.ventana = Tk()
+        self.ventana.title("🗺️ Navegador de Rutas - Ecuador")
+        self.ventana.geometry("1300x800")
+        self.ventana.configure(bg='white')
+        
+        # Marco principal
+        marco_principal = Frame(self.ventana, bg='white')
+        marco_principal.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        # Panel de control
+        panel_control = Frame(marco_principal, bg='white', relief='ridge', bd=2)
+        panel_control.pack(side='left', fill='y', padx=10)
+        
+        # Elementos del panel de control
+        Label(
+            panel_control,
+            text="🚗 Planificador de Viaje",
+            font=('Helvetica', 16, 'bold'),
+            bg='white',
+            fg='navy'
+        ).pack(pady=20)
+        
+        # Selectores de ciudades
+        Label(
+            panel_control,
+            text="📍 Punto de Partida:",
+            font=('Helvetica', 12),
+            bg='white'
+        ).pack(pady=5)
+        
+        self.origen = ttk.Combobox(
+            panel_control,
+            values=self.locaciones,
+            font=('Helvetica', 12),
+            state='readonly'
+        )
+        self.origen.pack(pady=5)
+        
+        Label(
+            panel_control,
+            text="🎯 Destino:",
+            font=('Helvetica', 12),
+            bg='white'
+        ).pack(pady=5)
+        
+        self.destino = ttk.Combobox(
+            panel_control,
+            values=self.locaciones,
+            font=('Helvetica', 12),
+            state='readonly'
+        )
+        self.destino.pack(pady=5)
+        
+        # Botón de búsqueda
+        ttk.Button(
+            panel_control,
+            text="🔍 Buscar Ruta",
+            command=self.calcular_ruta,
+            style='Accent.TButton'
+        ).pack(pady=20)
+        
+        self.mensaje_error = Label(
+            panel_control,
+            text="",
+            font=('Helvetica', 10),
+            bg='white',
+            fg='red',
+            wraplength=200
+        )
+        self.mensaje_error.pack(pady=10)
+        
+        # Panel de visualización
+        panel_visual = Frame(marco_principal, bg='white')
+        panel_visual.pack(side='right', fill='both', expand=True)
+        
+        self.frame_mapa = Frame(panel_visual, bg='white', relief='ridge', bd=2)
+        self.frame_mapa.pack(fill='both', expand=True)
+        
+        self.frame_info = Frame(panel_visual, bg='white', relief='ridge', bd=2)
+        self.frame_info.pack(fill='both', expand=True)
+        
+        # Estilo personalizado
+        style = ttk.Style()
+        style.configure('Accent.TButton', font=('Helvetica', 12))
+        
+        self.ventana.mainloop()
 
-# Crear el grafo
-G = nx.Graph()
+    def calcular_ruta(self):
+        """Maneja el evento de búsqueda de ruta"""
+        inicio = self.origen.get()
+        fin = self.destino.get()
+        
+        if not inicio or not fin:
+            self.mensaje_error.config(text="⚠️ Selecciona origen y destino")
+            return
+            
+        ruta, costo, error = self.encontrar_mejor_ruta(inicio, fin)
+        
+        if error:
+            self.mensaje_error.config(text=error)
+            return
+            
+        self.mensaje_error.config(text="")
+        self.visualizar_ruta(ruta, costo)
 
-# Agregar nodos (ciudades) al grafo
-G.add_nodes_from(ciudades)
-
-# Agregar conexiones con sus distancias
-for origen, destinos in distancias.items():
-    for destino, distancia in destinos.items():
-        if origen != destino and distancia > 0:  # Evitar distancias cero o conexiones consigo mismas
-            G.add_edge(origen, destino, weight=distancia)
-
-# Generar el Árbol de Expansión Mínima (MST)
-mst = nx.minimum_spanning_tree(G)
-
-# Dibujar el MST con mejoras en la presentación
-plt.figure(figsize=(20, 15))  # Aumentar el tamaño del gráfico
-
-# Usar un layout geográfico aproximado
-posiciones = {
-    "Ambato": (0, 3), "Azogues": (-4, -6), "Babahoyo": (-3, -2), "Cuenca": (-4, -8),
-    "Esmeraldas": (-2, 6), "Guaranda": (-1, 3), "Guayaquil": (-5, -5), "Ibarra": (0, 6),
-    "Latacunga": (0, 4), "Loja": (-5, -10), "Macas": (3, 0), "Machala": (-6, -7),
-    "Nueva Loja": (3, 6), "Portoviejo": (-4, 2), "Orellana": (4, 3), "Puyo": (2, 2),
-    "Quito": (0, 5), "Riobamba": (0, 2), "Tena": (2, 3), "Tulcán": (0, 7),
-    "Zamora": (2, -8), "Aloag": (0, 4.5), "Santo Domingo": (-2, 4), "Baños": (1, 2),
-    "Bahía de Caraquez": (-4, 4), "Baeza": (2, 5), "Rumichaca": (0, 8), "Macara": (-6, -9),
-    "Huaquillas": (-7, -8), "Manta": (-5, 2), "Otavalo": (0, 6.5), "Salinas": (-6, -4),
-    "San Lorenzo": (-1, 7), "Quevedo": (-3, 1), "Quininde": (-2, 5), "San Miguel": (1, -1),
-    "Putumayo": (4, 7), "Morona": (3, -2), "Muisne": (-3, 5), "Pedernales": (-3, 6)
-}
-
-# Dibujar nodos con colores y tamaños personalizados
-nx.draw_networkx_nodes(
-    mst, posiciones, node_color='skyblue', node_size=1000, edgecolors='black', alpha=0.9
-)
-
-# Dibujar aristas con colores personalizados según las distancias
-pesos = nx.get_edge_attributes(mst, 'weight')
-aristas_colores = ['green' if peso < 100 else 'orange' if peso < 300 else 'red' for peso in pesos.values()]
-nx.draw_networkx_edges(
-    mst, posiciones, edge_color=aristas_colores, width=2, alpha=0.7
-)
-
-# Añadir etiquetas a los nodos con un tamaño de fuente más grande
-nx.draw_networkx_labels(
-    mst, posiciones, font_size=12, font_color='black', font_weight='bold'
-)
-
-# Añadir etiquetas a las aristas (distancias) con un tamaño de fuente más grande
-nx.draw_networkx_edge_labels(
-    mst, posiciones, edge_labels=pesos, font_size=10, label_pos=0.5, font_color='blue'
-)
-
-# Título del gráfico con un tamaño de fuente más grande
-plt.title("Árbol de Expansión Mínima: Conexiones entre Ciudades del Ecuador", fontsize=20, fontweight='bold')
-
-# Ocultar los ejes para una mejor presentación
-plt.axis('off')
-
-# Mostrar el gráfico
-plt.show()
-
-# Guardar las conexiones del MST en un archivo JSON
-mst_conexiones = [(u, v, d['weight']) for (u, v, d) in mst.edges(data=True)]
-with open("mst_conexiones_geograficas.json", "w", encoding="utf-8") as f:
-    json.dump(mst_conexiones, f, ensure_ascii=False, indent=4)
-
-print("Conexiones del MST guardadas en 'mst_conexiones_geograficas.json'.")
+if __name__ == "__main__":
+    sistema = SistemaRutas()
