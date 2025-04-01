@@ -1,9 +1,11 @@
+import networkx as nx
+import matplotlib.pyplot as plt
 from openpyxl import load_workbook
 import json
 
 # Cargar el archivo Excel
 wb = load_workbook("Ecuador_Distancias.xlsx", data_only=True)
-sheet = wb["CUADRO DE DISTANCIAS"]  # Cambia el nombre de la hoja si es necesario
+sheet = wb["CUADRO DE DISTANCIAS"]
 
 # Leer los nombres de las ciudades (columna B, desde la fila 4 en adelante)
 ciudades = [sheet.cell(row=row, column=2).value for row in range(4, 44)]  # Ajusta el rango según tu archivo
@@ -12,45 +14,79 @@ ciudades = [sheet.cell(row=row, column=2).value for row in range(4, 44)]  # Ajus
 distancias = {}
 
 # Leer las distancias desde el Excel
-for i, ciudad_origen in enumerate(ciudades):
-    distancias[ciudad_origen] = {}
-    for j, ciudad_destino in enumerate(ciudades):
-        # Leer la distancia desde la celda correspondiente
-        distancia = sheet.cell(row=i + 4, column=j + 3).value  # Ajusta las coordenadas según tu archivo
-        if distancia is not None and distancia > 0:  # Ignorar distancias no válidas o cero
-            distancias[ciudad_origen][ciudad_destino] = distancia
+for row in range(4, 44):  # Ajusta el rango según las filas de tu archivo
+    ciudad_origen = sheet.cell(row=row, column=2).value  # Columna B tiene los nombres de las ciudades
+    distancias[ciudad_origen] = {
+        ciudades[col - 3]: sheet.cell(row=row, column=col).value for col in range(3, 43)  # Columnas C en adelante
+        if sheet.cell(row=row, column=col).value is not None
+    }
 
-# Crear una lista para almacenar las conexiones
-conexiones = []
-ciudades_conectadas = set()
+# Crear el grafo
+G = nx.Graph()
 
-# Conectar las ciudades basándonos en la distancia más corta
-for origen in ciudades:
-    if origen not in ciudades_conectadas:
-        # Filtrar las ciudades con distancias válidas y que no estén conectadas aún
-        destinos_validos = {ciudad: distancia for ciudad, distancia in distancias[origen].items() if ciudad not in ciudades_conectadas and ciudad != origen}
-        if destinos_validos:
-            # Encontrar la ciudad más cercana
-            ciudad_mas_cercana = min(destinos_validos, key=destinos_validos.get)
-            # Agregar la conexión
-            conexiones.append((origen, ciudad_mas_cercana, destinos_validos[ciudad_mas_cercana]))
-            ciudades_conectadas.add(origen)
-            ciudades_conectadas.add(ciudad_mas_cercana)
-            print(f"Conexión añadida: {origen} - {ciudad_mas_cercana}, Distancia: {destinos_validos[ciudad_mas_cercana]} km")
+# Agregar nodos (ciudades) al grafo
+G.add_nodes_from(ciudades)
 
-# Validar que todas las ciudades estén conectadas
-for origen in ciudades:
-    if origen not in ciudades_conectadas:
-        print(f"La ciudad {origen} no está conectada. Buscando una conexión...")
-        for destino, distancia in distancias[origen].items():
-            if destino in ciudades_conectadas:
-                conexiones.append((origen, destino, distancia))
-                ciudades_conectadas.add(origen)
-                print(f"Conexión añadida: {origen} - {destino}, Distancia: {distancia} km")
-                break
+# Agregar conexiones con sus distancias
+for origen, destinos in distancias.items():
+    for destino, distancia in destinos.items():
+        if origen != destino and distancia > 0:  # Evitar distancias cero o conexiones consigo mismas
+            G.add_edge(origen, destino, weight=distancia)
 
-# Guardar las conexiones en un archivo JSON
-with open("conexiones_geograficas.json", "w", encoding="utf-8") as archivo:
-    json.dump(conexiones, archivo, ensure_ascii=False, indent=4)
+# Generar el Árbol de Expansión Mínima (MST)
+mst = nx.minimum_spanning_tree(G)
 
-print("Conexiones geográficas guardadas en 'conexiones_geograficas.json'.")
+# Dibujar el MST con mejoras en la presentación
+plt.figure(figsize=(20, 15))  # Aumentar el tamaño del gráfico
+
+# Usar un layout geográfico aproximado
+posiciones = {
+    "Ambato": (0, 3), "Azogues": (-4, -6), "Babahoyo": (-3, -2), "Cuenca": (-4, -8),
+    "Esmeraldas": (-2, 6), "Guaranda": (-1, 3), "Guayaquil": (-5, -5), "Ibarra": (0, 6),
+    "Latacunga": (0, 4), "Loja": (-5, -10), "Macas": (3, 0), "Machala": (-6, -7),
+    "Nueva Loja": (3, 6), "Portoviejo": (-4, 2), "Orellana": (4, 3), "Puyo": (2, 2),
+    "Quito": (0, 5), "Riobamba": (0, 2), "Tena": (2, 3), "Tulcán": (0, 7),
+    "Zamora": (2, -8), "Aloag": (0, 4.5), "Santo Domingo": (-2, 4), "Baños": (1, 2),
+    "Bahía de Caraquez": (-4, 4), "Baeza": (2, 5), "Rumichaca": (0, 8), "Macara": (-6, -9),
+    "Huaquillas": (-7, -8), "Manta": (-5, 2), "Otavalo": (0, 6.5), "Salinas": (-6, -4),
+    "San Lorenzo": (-1, 7), "Quevedo": (-3, 1), "Quininde": (-2, 5), "San Miguel": (1, -1),
+    "Putumayo": (4, 7), "Morona": (3, -2), "Muisne": (-3, 5), "Pedernales": (-3, 6)
+}
+
+# Dibujar nodos con colores y tamaños personalizados
+nx.draw_networkx_nodes(
+    mst, posiciones, node_color='skyblue', node_size=1000, edgecolors='black', alpha=0.9
+)
+
+# Dibujar aristas con colores personalizados según las distancias
+pesos = nx.get_edge_attributes(mst, 'weight')
+aristas_colores = ['green' if peso < 100 else 'orange' if peso < 300 else 'red' for peso in pesos.values()]
+nx.draw_networkx_edges(
+    mst, posiciones, edge_color=aristas_colores, width=2, alpha=0.7
+)
+
+# Añadir etiquetas a los nodos con un tamaño de fuente más grande
+nx.draw_networkx_labels(
+    mst, posiciones, font_size=12, font_color='black', font_weight='bold'
+)
+
+# Añadir etiquetas a las aristas (distancias) con un tamaño de fuente más grande
+nx.draw_networkx_edge_labels(
+    mst, posiciones, edge_labels=pesos, font_size=10, label_pos=0.5, font_color='blue'
+)
+
+# Título del gráfico con un tamaño de fuente más grande
+plt.title("Árbol de Expansión Mínima: Conexiones entre Ciudades del Ecuador", fontsize=20, fontweight='bold')
+
+# Ocultar los ejes para una mejor presentación
+plt.axis('off')
+
+# Mostrar el gráfico
+plt.show()
+
+# Guardar las conexiones del MST en un archivo JSON
+mst_conexiones = [(u, v, d['weight']) for (u, v, d) in mst.edges(data=True)]
+with open("mst_conexiones_geograficas.json", "w", encoding="utf-8") as f:
+    json.dump(mst_conexiones, f, ensure_ascii=False, indent=4)
+
+print("Conexiones del MST guardadas en 'mst_conexiones_geograficas.json'.")
