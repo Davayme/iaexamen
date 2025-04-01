@@ -1,266 +1,297 @@
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
-from tkinter import Tk, Label, ttk, Frame, messagebox
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import heapq
-class SistemaRutas:
+import os
+from time import sleep
+
+class BuscadorRutas:
+    """
+    Clase principal que implementa la funcionalidad del buscador de rutas.
+    Gestiona el grafo de conexiones y las operaciones de búsqueda.
+    """
+    
     def __init__(self):
-        self.grafo = None
-        self.locaciones = None
-        self.inicializar_sistema()
+        """Inicializa el sistema y carga los datos"""
+        self.grafo = None      # Grafo de conexiones entre ciudades
+        self.ciudades = None   # Lista de ciudades disponibles
+        self.cargar_datos()    
         
-    def inicializar_sistema(self):
+    def limpiar_pantalla(self):
+        """Limpia la pantalla de la consola"""
+        os.system('cls' if os.name == 'nt' else 'clear')
+        
+    def cargar_datos(self):
+        """
+        Carga los datos desde Excel y construye el grafo de conexiones.
+        El archivo debe contener una matriz de distancias entre ciudades.
+        """
         try:
-            self.cargar_datos_desde_excel()
-            self.crear_interfaz()
-        except Exception as e:
-            messagebox.showerror("Error", f"Error al inicializar el sistema: {str(e)}")
+            print("Cargando datos de ciudades...")
+            datos = pd.read_excel(
+                "Ecuador_Distancias.xlsx", 
+                sheet_name="CUADRO DE DISTANCIAS", 
+                header=2
+            )
+            self.ciudades = datos['CIUDAD'].tolist()
+            self.grafo = nx.Graph()
             
-    def cargar_datos_desde_excel(self):
-        """Carga datos desde archivo Excel y construye el grafo de conexiones"""
-        datos = pd.read_excel(
-            "Ecuador_Distancias.xlsx", 
-            sheet_name="CUADRO DE DISTANCIAS", 
-            header=2
-        )
-        self.locaciones = datos['CIUDAD'].tolist()
-        self.grafo = nx.Graph()
-        
-        for i in range(len(self.locaciones)):
-            for j in range(i + 1, len(self.locaciones)):
-                distancia = datos.iloc[i, j + 2]
-                if pd.notna(distancia) and distancia > 0:
-                    self.grafo.add_edge(
-                        self.locaciones[i], 
-                        self.locaciones[j], 
-                        distancia=distancia
-                    )
+            # Construir grafo de conexiones
+            for i in range(len(self.ciudades)):
+                for j in range(i + 1, len(self.ciudades)):
+                    distancia = datos.iloc[i, j + 2]
+                    if pd.notna(distancia) and distancia > 0:
+                        self.grafo.add_edge(
+                            self.ciudades[i], 
+                            self.ciudades[j], 
+                            distancia=distancia
+                        )
+            print("✅ Datos cargados exitosamente!")
+            sleep(1)
+        except Exception as e:
+            print(f"❌ Error al cargar datos: {str(e)}")
+            exit(1)
 
-    def encontrar_mejor_ruta(self, inicio, destino):
-        """Implementa búsqueda de costo uniforme (UCS) para encontrar la mejor ruta"""
-        if inicio == destino:
-            return None, None, "⚠️ Origen y destino deben ser diferentes"
+    def mostrar_menu(self):
+        """Gestiona el menú principal y la interacción con el usuario"""
+        while True:
+            self.limpiar_pantalla()
+            print("\n=== 🗺️ Buscador de Rutas - Ecuador ===")
+            print("\n1. 🔍 Buscar ruta entre ciudades")
+            print("2. 📋 Ver lista de ciudades")
+            print("3. 🌐 Ver mapa completo")
+            print("4. ❌ Salir")
+            
+            opcion = input("\nSeleccione una opción (1-4): ")
+            
+            if opcion == "1":
+                self.buscar_ruta()
+            elif opcion == "2":
+                self.mostrar_ciudades()
+            elif opcion == "3":
+                self.visualizar_mapa_completo()
+            elif opcion == "4":
+                print("\n¡Gracias por usar el sistema! 👋")
+                break
+            else:
+                print("\n❌ Opción no válida. Intente nuevamente.")
+                sleep(1)
+
+    def mostrar_ciudades(self):
+        """Muestra la lista numerada de ciudades disponibles"""
+        self.limpiar_pantalla()
+        print("\n=== 📍 Ciudades Disponibles ===\n")
+        for i, ciudad in enumerate(sorted(self.ciudades), 1):
+            print(f"{i:2d}. {ciudad}")
+        input("\nPresione Enter para continuar...")
+
+    def buscar_ruta(self):
+        """
+        Gestiona el proceso de búsqueda de rutas entre ciudades.
+        Permite al usuario seleccionar origen y destino, y muestra el resultado.
+        """
+        self.limpiar_pantalla()
+        print("\n=== 🔍 Búsqueda de Ruta ===\n")
+        
+        # Mostrar lista de ciudades ordenadas alfabéticamente
+        print("Ciudades disponibles:")
+        ciudades_ordenadas = sorted(self.ciudades)
+        for i, ciudad in enumerate(ciudades_ordenadas, 1):
+            print(f"{i:2d}. {ciudad}")
             
         try:
-            cola_prioridad = [(0, inicio, [inicio])]
-            visitados = set()
-            
-            while cola_prioridad:
-                costo_actual, ubicacion_actual, ruta = heapq.heappop(cola_prioridad)
+            # Validar selección de origen
+            idx_origen = int(input("\nSeleccione número de ciudad origen: ")) - 1
+            if not (0 <= idx_origen < len(ciudades_ordenadas)):
+                print("❌ Número de ciudad inválido")
+                sleep(1)
+                return
                 
-                if ubicacion_actual == destino:
-                    return ruta, costo_actual, None
-                    
-                if ubicacion_actual in visitados:
-                    continue
-                    
-                visitados.add(ubicacion_actual)
+            # Validar selección de destino
+            idx_destino = int(input("Seleccione número de ciudad destino: ")) - 1
+            if not (0 <= idx_destino < len(ciudades_ordenadas)):
+                print("❌ Número de ciudad inválido")
+                sleep(1)
+                return
                 
-                for siguiente in self.grafo[ubicacion_actual]:
-                    if siguiente not in visitados:
-                        nuevo_costo = costo_actual + self.grafo[ubicacion_actual][siguiente]['distancia']
-                        nueva_ruta = ruta + [siguiente]
-                        heapq.heappush(cola_prioridad, (nuevo_costo, siguiente, nueva_ruta))
-                        
-            return None, None, "❌ No existe ruta disponible"
+            origen = ciudades_ordenadas[idx_origen]
+            destino = ciudades_ordenadas[idx_destino]
             
-        except Exception as e:
-            return None, None, f"❌ Error al calcular ruta: {str(e)}"
+            # Validar que origen y destino sean diferentes
+            if origen == destino:
+                print("❌ El origen y destino deben ser diferentes")
+                sleep(1)
+                return
+                
+            # Calcular y mostrar la ruta
+            ruta, distancia = self.calcular_ruta(origen, destino)
+            if ruta:
+                self.mostrar_resultado(ruta, distancia)
+            else:
+                print("❌ No existe ruta disponible entre estas ciudades")
+                sleep(1)
+                
+        except ValueError:
+            print("❌ Por favor, ingrese números válidos")
+            sleep(1)
+            return
 
-    def visualizar_ruta(self, ruta, costo_total):
-        """Visualiza la ruta en el mapa y muestra detalles"""
-        # Limpiar visualización anterior
-        for widget in self.frame_mapa.winfo_children():
-            widget.destroy()
-        for widget in self.frame_info.winfo_children():
-            widget.destroy()
+    def calcular_ruta(self, origen, destino):
+        """
+        Implementa el algoritmo de búsqueda de costo uniforme (UCS).
+        
+        Args:
+            origen (str): Ciudad de origen
+            destino (str): Ciudad de destino
             
-        # Configurar visualización
-        figura = plt.figure(figsize=(10, 8))
-        posiciones = nx.spring_layout(self.grafo, seed=42, k=0.9)
+        Returns:
+            tuple: (ruta, costo_total) o (None, None) si no hay ruta
+        """
+        cola = [(0, origen, [origen])]  # (costo, ciudad_actual, camino)
+        visitados = set()
         
-        # Dibujar grafo base
-        nx.draw_networkx_nodes(
-            self.grafo, posiciones,
-            node_size=600,
-            node_color='lightblue',
-            edgecolors='navy'
-        )
-        nx.draw_networkx_edges(
-            self.grafo, posiciones,
-            width=1.0,
-            edge_color='gray',
-            alpha=0.5
-        )
-        nx.draw_networkx_labels(
-            self.grafo, posiciones,
-            font_size=8,
-            font_weight='bold'
-        )
-        
-        # Resaltar ruta seleccionada
-        if ruta:
-            conexiones_ruta = list(zip(ruta[:-1], ruta[1:]))
-            nx.draw_networkx_edges(
-                self.grafo, posiciones,
-                edgelist=conexiones_ruta,
-                width=3.0,
-                edge_color='crimson'
-            )
-            nx.draw_networkx_nodes(
-                self.grafo, posiciones,
-                nodelist=ruta,
-                node_color='lightcoral',
-                node_size=800
-            )
+        while cola:
+            (costo, actual, camino) = heapq.heappop(cola)
             
-        # Mostrar mapa
-        canvas = FigureCanvasTkAgg(figura, master=self.frame_mapa)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill='both', expand=True)
+            # Si llegamos al destino, retornamos la ruta y su costo
+            if actual == destino:
+                return camino, costo
+                
+            if actual in visitados:
+                continue
+                
+            visitados.add(actual)
+            
+            # Explorar ciudades vecinas no visitadas
+            for siguiente in self.grafo[actual]:
+                if siguiente not in visitados:
+                    nuevo_costo = costo + self.grafo[actual][siguiente]['distancia']
+                    nueva_ruta = camino + [siguiente]
+                    heapq.heappush(cola, (nuevo_costo, siguiente, nueva_ruta))
         
-        # Mostrar detalles de la ruta
-        if ruta:
-            self.mostrar_detalles_ruta(ruta, costo_total)
+        return None, None
 
-    def mostrar_detalles_ruta(self, ruta, costo_total):
-        """Muestra información detallada de la ruta"""
-        # Título
-        Label(
-            self.frame_info,
-            text="📍 Detalles del Recorrido",
-            font=('Helvetica', 14, 'bold'),
-            fg='navy'
-        ).pack(pady=10)
+    def mostrar_resultado(self, ruta, distancia_total):
+        """
+        Muestra los detalles de la ruta encontrada y la visualiza en el mapa.
         
-        # Segmentos de la ruta
+        Args:
+            ruta (list): Lista de ciudades en la ruta
+            distancia_total (float): Distancia total de la ruta en km
+        """
+        self.limpiar_pantalla()
+        print("\n=== 🛣️ Ruta Encontrada ===\n")
+        
+        # Mostrar cada segmento de la ruta
         for i in range(len(ruta)-1):
             origen = ruta[i]
             destino = ruta[i+1]
             distancia = self.grafo[origen][destino]['distancia']
+            print(f"➡️  {origen} a {destino}: {distancia} km")
             
-            Label(
-                self.frame_info,
-                text=f"➡️ {origen} a {destino}: {distancia} km",
-                font=('Helvetica', 10),
-                fg='darkslategray'
-            ).pack(anchor='w', pady=2)
-            
-        # Distancia total
-        Label(
-            self.frame_info,
-            text=f"\n🏁 Distancia total: {costo_total} km",
-            font=('Helvetica', 12, 'bold'),
-            fg='crimson'
-        ).pack(pady=10)
+        print(f"\n📏 Distancia total: {distancia_total} km")
+        
+        # Visualizar ruta en el mapa
+        self.visualizar_ruta(ruta)
+        
+        input("\nPresione Enter para continuar...")
 
-    def crear_interfaz(self):
-        """Configura la interfaz gráfica del sistema"""
-        self.ventana = Tk()
-        self.ventana.title("🗺️ Navegador de Rutas - Ecuador")
-        self.ventana.geometry("1300x800")
-        self.ventana.configure(bg='white')
+    def visualizar_ruta(self, ruta):
+        """
+        Visualiza la ruta encontrada en un mapa interactivo.
+        Resalta los nodos y conexiones que forman parte de la ruta.
         
-        # Marco principal
-        marco_principal = Frame(self.ventana, bg='white')
-        marco_principal.pack(fill='both', expand=True, padx=20, pady=20)
+        Args:
+            ruta (list): Lista de ciudades que forman la ruta
+        """
+        plt.figure(figsize=(12, 8))
+        pos = nx.spring_layout(self.grafo, k=1, iterations=50)
         
-        # Panel de control
-        panel_control = Frame(marco_principal, bg='white', relief='ridge', bd=2)
-        panel_control.pack(side='left', fill='y', padx=10)
-        
-        # Elementos del panel de control
-        Label(
-            panel_control,
-            text="🚗 Planificador de Viaje",
-            font=('Helvetica', 16, 'bold'),
-            bg='white',
-            fg='navy'
-        ).pack(pady=20)
-        
-        # Selectores de ciudades
-        Label(
-            panel_control,
-            text="📍 Punto de Partida:",
-            font=('Helvetica', 12),
-            bg='white'
-        ).pack(pady=5)
-        
-        self.origen = ttk.Combobox(
-            panel_control,
-            values=self.locaciones,
-            font=('Helvetica', 12),
-            state='readonly'
+        # Dibujar grafo base
+        nx.draw_networkx_nodes(
+            self.grafo, 
+            pos, 
+            node_color='#e67e22',    # Naranja/terracota
+            node_size=500, 
+            alpha=0.6,
+            edgecolors='#d35400'     # Borde naranja oscuro
         )
-        self.origen.pack(pady=5)
-        
-        Label(
-            panel_control,
-            text="🎯 Destino:",
-            font=('Helvetica', 12),
-            bg='white'
-        ).pack(pady=5)
-        
-        self.destino = ttk.Combobox(
-            panel_control,
-            values=self.locaciones,
-            font=('Helvetica', 12),
-            state='readonly'
+        nx.draw_networkx_edges(
+            self.grafo, 
+            pos, 
+            alpha=0.2, 
+            edge_color='#95a5a6'     # Gris claro
         )
-        self.destino.pack(pady=5)
-        
-        # Botón de búsqueda
-        ttk.Button(
-            panel_control,
-            text="🔍 Buscar Ruta",
-            command=self.calcular_ruta,
-            style='Accent.TButton'
-        ).pack(pady=20)
-        
-        self.mensaje_error = Label(
-            panel_control,
-            text="",
-            font=('Helvetica', 10),
-            bg='white',
-            fg='red',
-            wraplength=200
+        nx.draw_networkx_labels(
+            self.grafo, 
+            pos, 
+            font_size=8, 
+            font_color='#2c3e50'     # Azul oscuro
         )
-        self.mensaje_error.pack(pady=10)
         
-        # Panel de visualización
-        panel_visual = Frame(marco_principal, bg='white')
-        panel_visual.pack(side='right', fill='both', expand=True)
+        # Resaltar la ruta encontrada
+        path_edges = list(zip(ruta[:-1], ruta[1:]))
+        nx.draw_networkx_nodes(
+            self.grafo, 
+            pos, 
+            nodelist=ruta, 
+            node_color='#e74c3c',    # Rojo terracota
+            node_size=700,
+            edgecolors='#c0392b'     # Borde rojo oscuro
+        )
+        nx.draw_networkx_edges(
+            self.grafo, 
+            pos, 
+            edgelist=path_edges, 
+            edge_color='#c0392b',    # Rojo oscuro
+            width=2
+        )
         
-        self.frame_mapa = Frame(panel_visual, bg='white', relief='ridge', bd=2)
-        self.frame_mapa.pack(fill='both', expand=True)
-        
-        self.frame_info = Frame(panel_visual, bg='white', relief='ridge', bd=2)
-        self.frame_info.pack(fill='both', expand=True)
-        
-        # Estilo personalizado
-        style = ttk.Style()
-        style.configure('Accent.TButton', font=('Helvetica', 12))
-        
-        self.ventana.mainloop()
+        plt.title("Mapa de Ruta")
+        plt.axis('off')
+        plt.show()
 
-    def calcular_ruta(self):
-        """Maneja el evento de búsqueda de ruta"""
-        inicio = self.origen.get()
-        fin = self.destino.get()
+    def visualizar_mapa_completo(self):
+        """
+        Muestra el mapa completo de todas las conexiones entre ciudades.
+        Utiliza un esquema de colores consistente para mejor visualización.
+        """
+        self.limpiar_pantalla()
+        print("\nGenerando mapa completo...")
         
-        if not inicio or not fin:
-            self.mensaje_error.config(text="⚠️ Selecciona origen y destino")
-            return
-            
-        ruta, costo, error = self.encontrar_mejor_ruta(inicio, fin)
+        plt.figure(figsize=(12, 8))
+        pos = nx.spring_layout(self.grafo, k=1, iterations=50)
         
-        if error:
-            self.mensaje_error.config(text=error)
-            return
-            
-        self.mensaje_error.config(text="")
-        self.visualizar_ruta(ruta, costo)
+        # Dibujar grafo completo
+        nx.draw_networkx_nodes(
+            self.grafo, 
+            pos, 
+            node_color='#e67e22',    # Naranja/terracota
+            node_size=500,
+            alpha=0.7,
+            edgecolors='#d35400'     # Borde naranja oscuro
+        )
+        nx.draw_networkx_edges(
+            self.grafo, 
+            pos,
+            edge_color='#95a5a6',    # Gris claro
+            alpha=0.3,
+            width=0.8
+        )
+        nx.draw_networkx_labels(
+            self.grafo, 
+            pos, 
+            font_size=8,
+            font_color='#2c3e50'     # Azul oscuro
+        )
+        
+        plt.title("Mapa Completo de Conexiones")
+        plt.axis('off')
+        plt.show()
+        
+        input("\nPresione Enter para continuar...")
 
+# Punto de entrada del programa
 if __name__ == "__main__":
-    sistema = SistemaRutas()
+    sistema = BuscadorRutas()
+    sistema.mostrar_menu()
