@@ -1,6 +1,6 @@
 # ============================================================================
 # DEMOSTRACIÓN DE REDES NEURONALES CONVOLUCIONALES CON CIFAR-10
-# Programa educativo optimizado para entrenamiento rápido
+# Programa educativo optimizado para reducir overfitting y mantener velocidad
 # ============================================================================
 
 # Importación de las bibliotecas necesarias
@@ -48,22 +48,6 @@ print(f"Forma de datos de prueba: {x_test.shape}")
 print(f"Forma de etiquetas de prueba: {y_test.shape}")
 print(f"Número de clases: {len(nombres_clases)}")
 
-# Visualización de algunas imágenes de ejemplo (opcional - comentar para acelerar)
-"""
-fig, axes = plt.subplots(2, 5, figsize=(12, 6))
-fig.suptitle('Ejemplos de imágenes CIFAR-10', fontsize=16)
-
-for i in range(10):
-    fila = i // 5
-    col = i % 5
-    axes[fila, col].imshow(x_train[i])
-    axes[fila, col].set_title(f'{nombres_clases[y_train[i][0]]}')
-    axes[fila, col].axis('off')
-
-plt.tight_layout()
-plt.show()
-"""
-
 # ============================================================================
 # PASO 2: PREPROCESAMIENTO DE DATOS
 # ============================================================================
@@ -84,6 +68,11 @@ y_test_cat = keras.utils.to_categorical(y_test, 10)
 
 print(f"Etiquetas convertidas a formato one-hot")
 
+# Configuración simple de data augmentation (muy ligero)
+data_augmentation = keras.Sequential([
+    layers.RandomFlip("horizontal")
+])
+
 # Configurar tamaño de batch para equilibrar velocidad y memoria
 BATCH_SIZE = 128  # Aumentado para acelerar entrenamiento
 VALIDATION_SPLIT = 0.2
@@ -93,40 +82,52 @@ VALIDATION_SPLIT = 0.2
 # ============================================================================
 
 print("\n" + "="*60)
-print("PASO 3: CONSTRUYENDO LA RED NEURONAL CONVOLUCIONAL OPTIMIZADA")
+print("PASO 3: CONSTRUYENDO LA RED NEURONAL CONVOLUCIONAL ANTI-OVERFITTING")
 print("="*60)
 
-def crear_modelo_cnn_eficiente():
+def crear_modelo_cnn_equilibrado():
     """
-    Construye una CNN optimizada para velocidad y rendimiento
+    Construye una CNN con fuerte regularización para evitar overfitting
+    manteniendo buen rendimiento
     """
-    modelo = keras.Sequential([
-        # Primera capa convolucional - entrada
-        layers.Conv2D(32, (3, 3), padding='same', activation='relu', input_shape=(32, 32, 3)),
-        layers.MaxPooling2D((2, 2)),
-        
-        # Segunda capa convolucional
-        layers.Conv2D(64, (3, 3), padding='same', activation='relu'),
-        layers.MaxPooling2D((2, 2)),
-        
-        # Tercera capa convolucional
-        layers.Conv2D(128, (3, 3), padding='same', activation='relu'),
-        layers.MaxPooling2D((2, 2)),
-        
-        # Capa de clasificación
-        layers.Flatten(),
-        layers.Dense(256, activation='relu'),
-        layers.Dropout(0.4),  # Solo un dropout al final
-        layers.Dense(10, activation='softmax')  # 10 clases
-    ])
+    # Capa de entrada con data augmentation básico
+    inputs = keras.Input(shape=(32, 32, 3))
+    x = data_augmentation(inputs)  # Aplica data augmentation en tiempo real
     
-    return modelo
+    # Primera capa convolucional
+    x = layers.Conv2D(32, (3, 3), padding='same', activation='relu')(x)
+    x = layers.BatchNormalization()(x)  # Normalización para estabilizar
+    x = layers.MaxPooling2D((2, 2))(x)
+    x = layers.Dropout(0.2)(x)  # Dropout moderado temprano
+    
+    # Segunda capa convolucional
+    x = layers.Conv2D(64, (3, 3), padding='same', activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.MaxPooling2D((2, 2))(x)
+    x = layers.Dropout(0.3)(x)  # Aumentando dropout
+    
+    # Tercera capa convolucional
+    x = layers.Conv2D(128, (3, 3), padding='same', activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.MaxPooling2D((2, 2))(x)
+    x = layers.Dropout(0.4)(x)  # Más dropout en capas profundas
+    
+    # Capa de clasificación con fuerte regularización
+    x = layers.Flatten()(x)
+    x = layers.Dense(256, activation='relu', 
+                    kernel_regularizer=keras.regularizers.l2(0.001))(x)  # L2 regularización
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.5)(x)  # Dropout intenso en capas finales
+    outputs = layers.Dense(10, activation='softmax')(x)
+    
+    model = keras.Model(inputs, outputs)
+    return model
 
 # Crear el modelo
-modelo = crear_modelo_cnn_eficiente()
+modelo = crear_modelo_cnn_equilibrado()
 
 # Mostrar resumen del modelo
-print("Arquitectura del modelo optimizado:")
+print("Arquitectura del modelo anti-overfitting:")
 modelo.summary()
 
 # ============================================================================
@@ -137,15 +138,25 @@ print("\n" + "="*60)
 print("PASO 4: COMPILANDO EL MODELO")
 print("="*60)
 
-# Configuración del optimizador
+# Configuración del optimizador con decay
+initial_learning_rate = 0.001
+lr_schedule = keras.optimizers.schedules.ExponentialDecay(
+    initial_learning_rate,
+    decay_steps=1000,
+    decay_rate=0.9,
+    staircase=True)
+
+optimizer = keras.optimizers.Adam(learning_rate=lr_schedule)
+
+# Compilar con función de pérdida y métricas
 modelo.compile(
-    optimizer=keras.optimizers.Adam(learning_rate=0.001),  # Learning rate estándar para equilibrio
+    optimizer=optimizer,
     loss='categorical_crossentropy',
     metrics=['accuracy']
 )
 
 print("Modelo compilado exitosamente!")
-print("Optimizador: Adam (learning_rate=0.001)")
+print("Optimizador: Adam con ExponentialDecay (learning_rate=0.001)")
 print("Función de pérdida: categorical_crossentropy")
 print("Métricas: accuracy")
 
@@ -159,16 +170,16 @@ print("="*60)
 
 # Callback para reducir la tasa de aprendizaje cuando el rendimiento se estanca
 reduce_lr = keras.callbacks.ReduceLROnPlateau(
-    monitor='val_accuracy',
+    monitor='val_loss',  # Cambiar a val_loss para enfocarse en generalización
     factor=0.5,
     patience=3,
-    min_lr=0.0001,
+    min_lr=0.00005,
     verbose=1
 )
 
 # Callback para detener el entrenamiento temprano
 early_stopping = keras.callbacks.EarlyStopping(
-    monitor='val_accuracy',
+    monitor='val_loss',  # Monitorear val_loss para mejor generalización
     patience=5,
     restore_best_weights=True,
     verbose=1
@@ -178,8 +189,8 @@ early_stopping = keras.callbacks.EarlyStopping(
 callbacks = [reduce_lr, early_stopping]
 
 print("Callbacks configurados:")
-print("- ReduceLROnPlateau: reduce tasa de aprendizaje cuando la precisión se estanca")
-print("- EarlyStopping: detiene el entrenamiento cuando no hay más mejoras")
+print("- ReduceLROnPlateau: reduce tasa de aprendizaje basado en pérdida de validación")
+print("- EarlyStopping: detiene el entrenamiento cuando la pérdida de validación deja de mejorar")
 
 # ============================================================================
 # PASO 6: ENTRENAMIENTO DEL MODELO
@@ -190,12 +201,14 @@ print("PASO 6: ENTRENANDO EL MODELO")
 print("="*60)
 
 # Configuración del entrenamiento
-EPOCHS = 25  # Máximo de épocas
+EPOCHS = 30  # Más épocas para permitir convergencia lenta pero estable
 
 print(f"Configuración del entrenamiento:")
 print(f"- Épocas máximas: {EPOCHS}")
 print(f"- Tamaño del lote: {BATCH_SIZE}")
 print(f"- División de validación: {VALIDATION_SPLIT}")
+print(f"- Data augmentation: Activado (solo horizontal flip)")
+print(f"- Regularización: BatchNorm, Dropout progresivo, L2")
 
 print("\nIniciando entrenamiento...")
 start_time = time.time()
@@ -257,10 +270,12 @@ plot_training_history(history)
 # Estadísticas finales del entrenamiento
 final_train_acc = history.history['accuracy'][-1]
 final_val_acc = history.history['val_accuracy'][-1]
+overfitting_gap = final_train_acc - final_val_acc
 
 print(f"Resultados finales del entrenamiento:")
 print(f"- Precisión de entrenamiento: {final_train_acc:.4f}")
 print(f"- Precisión de validación: {final_val_acc:.4f}")
+print(f"- Brecha de overfitting: {overfitting_gap:.4f} ({overfitting_gap*100:.1f}%)")
 
 # ============================================================================
 # PASO 8: EVALUACIÓN EN DATOS DE PRUEBA
@@ -323,18 +338,21 @@ print("PASO 10: RESUMEN Y CONCLUSIONES")
 print("="*60)
 
 print("🎉 ¡DEMOSTRACIÓN COMPLETADA EXITOSAMENTE!")
-print("\nResumen de resultados del modelo optimizado:")
+print("\nResumen de resultados del modelo anti-overfitting:")
 print(f"✅ Precisión final en datos de prueba: {test_accuracy:.1%}")
 print(f"✅ Tiempo total de entrenamiento: {training_time:.2f} segundos")
 print(f"✅ Tiempo promedio por época: {training_time / len(history.history['loss']):.2f} segundos")
 print(f"✅ Número de parámetros del modelo: {modelo.count_params():,}")
 print(f"✅ Entrenamiento completado en {len(history.history['loss'])} épocas")
+print(f"✅ Brecha de overfitting: {overfitting_gap:.1%}")
 
-print("\nOptimizaciones aplicadas:")
-print("• Arquitectura CNN más eficiente")
-print("• Batch size aumentado a 128")
-print("• Menos capas de regularización")
-print("• Estrategias eficientes de entrenamiento")
+print("\nTécnicas aplicadas contra el overfitting:")
+print("• Regularización L2 en capas densas")
+print("• Dropout progresivo (0.2 → 0.3 → 0.4 → 0.5)")
+print("• BatchNormalization en cada bloque convolucional")
+print("• Data augmentation en tiempo real (horizontal flip)")
+print("• Learning rate con decay exponencial")
+print("• Early stopping basado en pérdida de validación")
 
 print("\n" + "="*60)
 print("¡Gracias por explorar las redes neuronales convolucionales!")
