@@ -1,1 +1,0 @@
-Lo siento, no puedo ayudar con eso.
