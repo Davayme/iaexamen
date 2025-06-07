@@ -33,7 +33,7 @@ print("="*50)
 
 # Buscar archivos de datos preprocesados
 dataset_dir = 'dataset_output'
-dataset_csv = os.path.join(dataset_dir, 'dataset_canciones_ampliado.csv')
+dataset_csv = os.path.join(dataset_dir, 'dataset_canciones_mejorado.csv')
 
 try:
     # Cargar el dataset
@@ -42,7 +42,7 @@ try:
     print(f"Dataset cargado: {len(df_canciones)} canciones")
 except Exception as e:
     print(f"ERROR al cargar el dataset: {e}")
-    print("Asegúrate de ejecutar primero el script para generar el dataset.")
+    print("Asegúrate de ejecutar primero el script generarDataset.py")
     exit(1)
 
 # ==============================
@@ -87,7 +87,8 @@ axes[1, 0].set_ylabel('Popularidad Media')
 axes[1, 0].grid(True, alpha=0.3)
 
 # 4. Matriz de correlación de características numéricas
-cols_numericas = ['popularidad', 'bpm', 'duracion_seg', 'clave_musical', 'modo', 'colaboracion', 'año', 'mes']
+cols_numericas = ['popularidad', 'bpm', 'duracion_seg', 'clave_musical', 'modo', 'colaboracion', 
+                  'año', 'mes', 'instrumental', 'hit_viral']
 corr = df_canciones[cols_numericas].corr()
 sns.heatmap(corr, annot=True, fmt='.2f', cmap='coolwarm', center=0, ax=axes[1, 1])
 axes[1, 1].set_title('Matriz de Correlación entre Características', fontsize=14, fontweight='bold')
@@ -103,21 +104,17 @@ print("\n" + "="*50)
 print("3. PREPARACIÓN DE LOS DATOS")
 print("="*50)
 
-def crear_secuencias(df, lookback=5):
+def crear_secuencias_por_artista(df, lookback=5):
     """
-    Crea secuencias de canciones para entrenamiento de RNN
+    Crea secuencias de canciones por artista para entrenamiento de RNN
     """
     print(f"Creando secuencias con ventana temporal de {lookback} canciones...")
     
-    # Seleccionar características relevantes basadas en la matriz de correlación
+    # Seleccionar características relevantes
     caracteristicas = [
-        'popularidad', 'bpm', 'duracion_seg', 'clave_musical', 
-        'modo', 'colaboracion', 'año', 'mes', 'hit_viral'
+        'popularidad', 'bpm', 'duracion_seg', 'clave_musical', 'modo', 
+        'colaboracion', 'instrumental', 'hit_viral', 'año', 'mes'
     ]
-    
-    # Si 'hit_viral' no existe, eliminar de la lista
-    if 'hit_viral' not in df.columns:
-        caracteristicas.remove('hit_viral')
     
     X = []  # Secuencias de entrada
     y = []  # Valores a predecir
@@ -144,7 +141,7 @@ def crear_secuencias(df, lookback=5):
 
 # Crear secuencias para entrenamiento
 lookback = 5  # Usar 5 canciones anteriores para predecir la siguiente
-X, y = crear_secuencias(df_canciones, lookback)
+X, y = crear_secuencias_por_artista(df_canciones, lookback)
 
 print(f"Secuencias creadas: X shape: {X.shape}, y shape: {y.shape}")
 
@@ -157,7 +154,7 @@ print(f"Conjunto de validación: {X_val.shape[0]} muestras")
 print(f"Conjunto de prueba: {X_test.shape[0]} muestras")
 
 # Normalización de datos
-# Escalar features (para cada feature a lo largo de todas las secuencias y timesteps)
+# Escalar features (para cada feature a lo largo de todas las secuencias)
 scaler = MinMaxScaler()
 n_samples, n_timesteps, n_features = X_train.shape
 
@@ -269,7 +266,7 @@ print("\n" + "="*50)
 print("5. ENTRENAMIENTO DE MODELOS")
 print("="*50)
 
-def entrenar_modelo(modelo, nombre, X_train, y_train, X_val, y_val, epochs=80, batch_size=64):
+def entrenar_modelo(modelo, nombre, X_train, y_train, X_val, y_val, epochs=50, batch_size=32):
     """
     Entrena un modelo y retorna el historial de entrenamiento
     """
@@ -340,20 +337,8 @@ def evaluar_modelo(modelo, nombre, X_test, y_test):
     mae = mean_absolute_error(y_true, y_pred)
     r2 = r2_score(y_true, y_pred)
     
-    # Análisis de errores grandes
-    errors = np.abs(y_true - y_pred)
-    large_errors = errors > 30  # Errores mayores a 30 puntos
-    num_large_errors = np.sum(large_errors)
-    percent_large_errors = (num_large_errors / len(y_true)) * 100
-    
-    print(f"  Errores grandes (>30): {num_large_errors} ({percent_large_errors:.2f}%)")
-    
-    if num_large_errors > 0:
-        print(f"  Error medio en estos puntos: {np.mean(errors[large_errors]):.2f}")
-        print(f"  MSE sin estos puntos: {mean_squared_error(y_true[~large_errors], y_pred[~large_errors]):.2f}")
-    
     # Calcular MAPE con filtro para valores significativos
-    mask = y_true > 5.0
+    mask = y_true > 5.0  # Evitar división por valores cercanos a cero
     if np.sum(mask) > 0:
         mape = np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
     else:
@@ -594,5 +579,5 @@ for name, model in modelos.items():
     print(f"{name:4s}: {params:,} parámetros")
 
 print("\n" + "="*80)
-print(f"¡ANÁLISIS COMPLETADO! El modelo recomendado es: {mejor_modelo_general}")
+print(f"¡ANÁLISIS COMPLETADO! El modelo recomendado para predecir popularidad musical es: {mejor_modelo_general}")
 print("="*80)
