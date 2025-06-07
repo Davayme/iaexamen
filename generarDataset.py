@@ -382,6 +382,19 @@ def generar_dataset_canciones(artistas, perfiles_artistas, n_canciones_por_artis
             # Añadir algo de ruido aleatorio (±15%)
             popularidad *= random.uniform(0.85, 1.15)
             
+            # MODIFICACIÓN: Aplicar transformación para obtener mejor distribución
+            # Usar una mezcla de distribuciones para tener más valores en zonas alta y media
+            distribucion = random.random()
+            if distribucion < 0.35:  # 35% probabilidad de alta popularidad
+                # Ajustar hacia arriba - zona alta (70-100)
+                popularidad = popularidad * 0.3 + 70  # Esto dará valores entre 70 y 100
+            elif distribucion < 0.75:  # 40% probabilidad de media popularidad
+                # Ajustar hacia rango medio (30-70)
+                popularidad = popularidad * 0.4 + 30  # Esto dará valores entre 30 y 70
+            else:  # 25% probabilidad de baja popularidad
+                # Ajustar hacia abajo - zona baja (1-30) 
+                popularidad = popularidad * 0.3 + 1  # Esto dará valores entre 1 y 30
+            
             # Asegurar que la popularidad esté en el rango [1, 100]
             popularidad = max(1, min(100, popularidad))
             
@@ -499,7 +512,33 @@ def analizar_dataset(df):
     plt.savefig(os.path.join(output_dir, 'analisis_dataset.png'), dpi=300)
     print(f"\nGráfico guardado en {output_dir}/analisis_dataset.png")
     
-    # Mostrar gráfico
+    # NUEVO GRÁFICO: Visualización de la distribución mejorada
+    plt.figure(figsize=(14, 6))
+    
+    # Gráfico de distribución con KDE
+    plt.subplot(1, 2, 1)
+    sns.histplot(df['popularidad'], bins=30, kde=True)
+    plt.title('Distribución de Popularidad con Densidad', fontsize=14)
+    plt.xlabel('Popularidad')
+    plt.ylabel('Frecuencia')
+    plt.axvline(x=30, color='red', linestyle='--', alpha=0.7)
+    plt.axvline(x=70, color='red', linestyle='--', alpha=0.7)
+    plt.text(15, plt.gca().get_ylim()[1]*0.9, 'BAJA', ha='center', fontsize=12)
+    plt.text(50, plt.gca().get_ylim()[1]*0.9, 'MEDIA', ha='center', fontsize=12)
+    plt.text(85, plt.gca().get_ylim()[1]*0.9, 'ALTA', ha='center', fontsize=12)
+    
+    # Gráfico de distribución por categoría
+    plt.subplot(1, 2, 2)
+    percentages = df['categoria_popularidad'].value_counts(normalize=True) * 100
+    sns.barplot(x=percentages.index, y=percentages.values)
+    plt.title('Distribución Porcentual por Categoría', fontsize=14)
+    plt.xlabel('Categoría de Popularidad')
+    plt.ylabel('Porcentaje (%)')
+    for i, v in enumerate(percentages):
+        plt.text(i, v + 1, f"{v:.1f}%", ha='center')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'distribucion_popularidad.png'), dpi=300)
     plt.show()
     
     return

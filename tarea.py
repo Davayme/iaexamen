@@ -3,23 +3,25 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, SimpleRNN, LSTM, GRU, Dropout
+from tensorflow.keras.layers import Dense, SimpleRNN, LSTM, GRU, Dropout, Bidirectional, BatchNormalization
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.regularizers import l2
 import warnings
 warnings.filterwarnings('ignore')
 
-# Configurar semilla para reproducibilidad
+# Configurar semilla para reproducibilidad y rendimiento
 np.random.seed(42)
 tf.random.set_seed(42)
+tf.config.optimizer.set_jit(True)  # Activar XLA para mejor rendimiento
 
 print("="*80)
-print("PREDICCIÓN DE POPULARIDAD MUSICAL CON REDES NEURONALES RECURRENTES")
+print("PREDICCIÓN MEJORADA DE POPULARIDAD MUSICAL CON REDES NEURONALES RECURRENTES")
 print("="*80)
 print("\nTensorFlow versión:", tf.__version__)
 
@@ -94,26 +96,98 @@ sns.heatmap(corr, annot=True, fmt='.2f', cmap='coolwarm', center=0, ax=axes[1, 1
 axes[1, 1].set_title('Matriz de Correlación entre Características', fontsize=14, fontweight='bold')
 
 plt.tight_layout()
+plt.savefig('visualizacion_exploratoria.png', dpi=300)
 plt.show()
 
 # ==============================
-# 3. PREPARACIÓN DE LOS DATOS
+# 3. PREPARACIÓN DE LOS DATOS (MEJORADA)
 # ==============================
 
 print("\n" + "="*50)
-print("3. PREPARACIÓN DE LOS DATOS")
+print("3. PREPARACIÓN DE LOS DATOS MEJORADA")
 print("="*50)
 
-def crear_secuencias_por_artista(df, lookback=5):
+# MEJORA 1: Crear características adicionales para enriquecer el modelo
+print("Generando características adicionales...")
+
+# Tendencias históricas por artista (promedio móvil)
+print("Calculando tendencias históricas por artista...")
+df_artistas_historico = df_canciones.sort_values(['artista', 'fecha_lanzamiento'])
+df_artistas_historico['popularidad_artista_anterior'] = df_artistas_historico.groupby('artista')['popularidad'].shift(1)
+df_artistas_historico['media_3_canciones'] = df_artistas_historico.groupby('artista')['popularidad'].transform(
+    lambda x: x.rolling(window=3, min_periods=1).mean()
+)
+df_artistas_historico['tendencia_artista'] = df_artistas_historico.groupby('artista')['popularidad'].transform(
+    lambda x: x.rolling(window=5, min_periods=1).mean() - x.rolling(window=10, min_periods=1).mean()
+)
+# Rellenar NaN con 0
+df_artistas_historico.fillna({'popularidad_artista_anterior': df_artistas_historico['popularidad'], 
+                             'tendencia_artista': 0}, inplace=True)
+
+# Popularidad promedio por género en el último año
+print("Calculando popularidad promedio por género...")
+df_canciones['año_mes'] = df_canciones['fecha_lanzamiento'].dt.to_period('M')
+genero_pop_mes = df_canciones.groupby(['genero', 'año_mes'])['popularidad'].mean().reset_index()
+genero_pop_mes = genero_pop_mes.rename(columns={'popularidad': 'popularidad_genero_mes'})
+
+# Función para obtener popularidad reciente del género
+def get_genero_trend(row, genero_pop_df):
+    fecha_periodo = row['fecha_lanzamiento'].to_period('M')
+    genero = row['genero']
+    
+    # Filtrar para el período actual/anterior y el género específico
+    mismo_genero = genero_pop_df[genero_pop_df['genero'] == genero]
+    periodos = mismo_genero['año_mes'].astype(str).tolist()
+    
+    if str(fecha_periodo) in periodos:
+        idx = periodos.index(str(fecha_periodo))
+        if idx > 0:  # Si hay al menos un período anterior
+            periodo_actual = mismo_genero.iloc[idx]['popularidad_genero_mes']
+            periodo_anterior = mismo_genero.iloc[idx-1]['popularidad_genero_mes']
+            return periodo_actual, (periodo_actual - periodo_anterior)
+    
+    # Valor por defecto si no hay información
+    return df_canciones[df_canciones['genero'] == genero]['popularidad'].mean(), 0
+
+# Aplicar función para obtener tendencias de género
+print("Calculando tendencias de género...")
+temp_trends = df_canciones.apply(lambda row: get_genero_trend(row, genero_pop_mes), axis=1)
+df_canciones['popularidad_genero_actual'] = [t[0] for t in temp_trends]
+df_canciones['tendencia_genero_reciente'] = [t[1] for t in temp_trends]
+
+# Añadir indicador de estacionalidad (ciertos meses tienen picos de popularidad)
+print("Añadiendo indicadores estacionales...")
+temp_month_avg = df_canciones.groupby('mes')['popularidad'].mean()
+max_month = temp_month_avg.idxmax()
+df_canciones['es_mes_popular'] = (df_canciones['mes'] == max_month).astype(int)
+
+# Características de interacciones
+df_canciones['interaccion_hit_colab'] = df_canciones['hit_viral'] * df_canciones['colaboracion']
+df_canciones['energia_bpm'] = np.log1p((df_canciones['bpm'] - 60) / 5)  # Normalización logarítmica del BPM
+
+# Asegurar que todas las características estén presentes en el artista_historico
+for col in ['popularidad_genero_actual', 'tendencia_genero_reciente', 'es_mes_popular', 
+            'interaccion_hit_colab', 'energia_bpm']:
+    df_artistas_historico[col] = df_canciones[col]
+
+# Sustituir el dataframe original con el enriquecido
+df_canciones = df_artistas_historico
+
+print(f"Dataset enriquecido con nuevas características: {df_canciones.shape}")
+
+def crear_secuencias_por_artista(df, lookback=8):  # MEJORA: Aumentar lookback a 8
     """
     Crea secuencias de canciones por artista para entrenamiento de RNN
     """
     print(f"Creando secuencias con ventana temporal de {lookback} canciones...")
     
-    # Seleccionar características relevantes
+    # Seleccionar características relevantes (MEJORADO con nuevas características)
     caracteristicas = [
         'popularidad', 'bpm', 'duracion_seg', 'clave_musical', 'modo', 
-        'colaboracion', 'instrumental', 'hit_viral', 'año', 'mes'
+        'colaboracion', 'instrumental', 'hit_viral', 'año', 'mes',
+        'popularidad_artista_anterior', 'media_3_canciones', 'tendencia_artista',
+        'popularidad_genero_actual', 'tendencia_genero_reciente', 'es_mes_popular',
+        'interaccion_hit_colab', 'energia_bpm'
     ]
     
     X = []  # Secuencias de entrada
@@ -139,8 +213,8 @@ def crear_secuencias_por_artista(df, lookback=5):
     
     return np.array(X), np.array(y)
 
-# Crear secuencias para entrenamiento
-lookback = 5  # Usar 5 canciones anteriores para predecir la siguiente
+# MEJORA: Aumentar ventana temporal (lookback)
+lookback = 8  # Usar 8 canciones anteriores en lugar de 5
 X, y = crear_secuencias_por_artista(df_canciones, lookback)
 
 print(f"Secuencias creadas: X shape: {X.shape}, y shape: {y.shape}")
@@ -153,9 +227,38 @@ print(f"Conjunto de entrenamiento: {X_train.shape[0]} muestras")
 print(f"Conjunto de validación: {X_val.shape[0]} muestras")
 print(f"Conjunto de prueba: {X_test.shape[0]} muestras")
 
-# Normalización de datos
-# Escalar features (para cada feature a lo largo de todas las secuencias)
-scaler = MinMaxScaler()
+# MEJORA: Data augmentation para el conjunto de entrenamiento
+def aumentar_datos(X, y, factor_ruido=0.03, n_muestras=None):
+    """Añade ruido Gaussiano aleatorio a los datos para aumentarlos"""
+    print("Aplicando data augmentation...")
+    
+    if n_muestras is None:
+        n_muestras = X.shape[0] // 3  # Por defecto, añadir un 33% más de datos
+    
+    # Seleccionar muestras aleatorias para aumentar
+    indices = np.random.choice(X.shape[0], n_muestras, replace=False)
+    
+    X_aug = X[indices].copy()
+    y_aug = y[indices].copy()
+    
+    # Añadir ruido a las características
+    noise = np.random.normal(0, factor_ruido, X_aug.shape)
+    X_aug = X_aug + noise
+    
+    # Añadir pequeñas variaciones a las etiquetas (en un rango pequeño)
+    y_noise = np.random.normal(0, 1.5, y_aug.shape)  # Ruido pequeño para popularidad
+    y_aug = y_aug + y_noise
+    y_aug = np.clip(y_aug, 1, 100)  # Mantener popularidad en rango [1, 100]
+    
+    return np.vstack([X, X_aug]), np.hstack([y, y_aug])
+
+# Aplicar data augmentation al conjunto de entrenamiento
+X_train, y_train = aumentar_datos(X_train, y_train, factor_ruido=0.03, n_muestras=X_train.shape[0] // 3)
+print(f"Conjunto de entrenamiento aumentado: {X_train.shape[0]} muestras")
+
+# MEJORA: Utilizar StandardScaler en lugar de MinMaxScaler para características
+# StandardScaler maneja mejor outliers y normaliza a media 0 y desviación estándar 1
+scaler = StandardScaler()
 n_samples, n_timesteps, n_features = X_train.shape
 
 # Reshape para normalizar (combinar muestras y timesteps)
@@ -168,7 +271,7 @@ X_val_scaled = scaler.transform(X_val_reshaped).reshape(X_val.shape)
 X_test_reshaped = X_test.reshape(-1, n_features)
 X_test_scaled = scaler.transform(X_test_reshaped).reshape(X_test.shape)
 
-# Normalizar target (popularidad)
+# Normalizar target (popularidad) - seguimos usando MinMaxScaler para la variable objetivo
 y_scaler = MinMaxScaler()
 y_train_scaled = y_scaler.fit_transform(y_train.reshape(-1, 1)).flatten()
 y_val_scaled = y_scaler.transform(y_val.reshape(-1, 1)).flatten()  
@@ -177,64 +280,86 @@ y_test_scaled = y_scaler.transform(y_test.reshape(-1, 1)).flatten()
 print("Normalización de datos completada")
 
 # ==============================
-# 4. DEFINICIÓN DE MODELOS
+# 4. DEFINICIÓN DE MODELOS MEJORADOS
 # ==============================
 
 print("\n" + "="*50)
-print("4. DEFINICIÓN DE MODELOS")
+print("4. DEFINICIÓN DE MODELOS MEJORADOS")
 print("="*50)
 
-def crear_modelo_rnn(input_shape, units=64, dropout_rate=0.2):
-    """Crea un modelo RNN simple (Vanilla RNN)"""
+def crear_modelo_rnn_mejorado(input_shape, units=128, dropout_rate=0.3):  # MEJORA: Unidades a 128, dropout a 0.3
+    """Crea un modelo RNN simple mejorado"""
     model = Sequential([
-        SimpleRNN(units, return_sequences=True, input_shape=input_shape),
+        SimpleRNN(units, return_sequences=True, input_shape=input_shape, 
+                 recurrent_regularizer=l2(0.001)),  # MEJORA: Regularización L2
+        BatchNormalization(),  # MEJORA: Batch normalization
         Dropout(dropout_rate),
-        SimpleRNN(units//2),
+        SimpleRNN(units//2, recurrent_regularizer=l2(0.001)),
+        BatchNormalization(),
         Dropout(dropout_rate),
-        Dense(25, activation='relu'),
+        Dense(64, activation='relu', kernel_regularizer=l2(0.001)),  # MEJORA: Capa más ancha
+        Dense(32, activation='relu', kernel_regularizer=l2(0.001)),  # MEJORA: Capa adicional
         Dense(1)
     ])
     
     model.compile(
-        optimizer=Adam(learning_rate=0.001),
+        optimizer=Adam(learning_rate=0.0005),  # MEJORA: Learning rate más bajo
         loss='mse',
         metrics=['mae']
     )
     
     return model
 
-def crear_modelo_lstm(input_shape, units=64, dropout_rate=0.2):
-    """Crea un modelo LSTM"""
+def crear_modelo_lstm_mejorado(input_shape, units=128, dropout_rate=0.3):
+    """Crea un modelo LSTM mejorado"""
     model = Sequential([
-        LSTM(units, return_sequences=True, input_shape=input_shape),
+        LSTM(units, return_sequences=True, input_shape=input_shape, 
+             recurrent_regularizer=l2(0.001)),
+        BatchNormalization(),
         Dropout(dropout_rate),
-        LSTM(units//2),
+        LSTM(units//2, recurrent_regularizer=l2(0.001)),
+        BatchNormalization(),
         Dropout(dropout_rate),
-        Dense(25, activation='relu'),
+        Dense(64, activation='relu', kernel_regularizer=l2(0.001)),
+        Dense(32, activation='relu', kernel_regularizer=l2(0.001)),
         Dense(1)
     ])
     
     model.compile(
-        optimizer=Adam(learning_rate=0.001),
+        optimizer=Adam(learning_rate=0.0005),
         loss='mse',
         metrics=['mae']
     )
     
     return model
 
-def crear_modelo_gru(input_shape, units=64, dropout_rate=0.2):
-    """Crea un modelo GRU"""
+def crear_modelo_gru_mejorado(input_shape, units=128, dropout_rate=0.3):
+    """Crea un modelo GRU mejorado con arquitectura más profunda"""
     model = Sequential([
-        GRU(units, return_sequences=True, input_shape=input_shape),
+        # MEJORA: Usar capas bidireccionales para capturar patrones en ambos sentidos de la secuencia
+        Bidirectional(GRU(units, return_sequences=True, recurrent_regularizer=l2(0.001)), 
+                      input_shape=input_shape),
+        BatchNormalization(),
         Dropout(dropout_rate),
-        GRU(units//2),
+        
+        Bidirectional(GRU(units//2, return_sequences=True, recurrent_regularizer=l2(0.001))),
+        BatchNormalization(),
         Dropout(dropout_rate),
-        Dense(25, activation='relu'),
+        
+        Bidirectional(GRU(units//4, recurrent_regularizer=l2(0.001))),
+        BatchNormalization(),
+        Dropout(dropout_rate),
+        
+        Dense(64, activation='relu', kernel_regularizer=l2(0.001)),
+        BatchNormalization(),
+        Dropout(0.2),
+        
+        Dense(32, activation='relu', kernel_regularizer=l2(0.001)),
         Dense(1)
     ])
     
     model.compile(
-        optimizer=Adam(learning_rate=0.001),
+        optimizer=Adam(learning_rate=0.0005),
         loss='mse',
         metrics=['mae']
     )
@@ -245,28 +370,28 @@ def crear_modelo_gru(input_shape, units=64, dropout_rate=0.2):
 input_shape = (X_train_scaled.shape[1], X_train_scaled.shape[2])
 print(f"Forma de entrada para los modelos: {input_shape}")
 
-# Crear modelos
-print("Creando modelos...")
+# Crear modelos mejorados
+print("Creando modelos mejorados...")
 modelos = {
-    'RNN': crear_modelo_rnn(input_shape),
-    'LSTM': crear_modelo_lstm(input_shape),
-    'GRU': crear_modelo_gru(input_shape)
+    'RNN': crear_modelo_rnn_mejorado(input_shape),
+    'LSTM': crear_modelo_lstm_mejorado(input_shape),
+    'GRU': crear_modelo_gru_mejorado(input_shape)
 }
 
 # Mostrar arquitecturas
 for nombre, modelo in modelos.items():
-    print(f"\nArquitectura del modelo {nombre}:")
+    print(f"\nArquitectura del modelo {nombre} mejorado:")
     modelo.summary()
 
 # ==============================
-# 5. ENTRENAMIENTO DE MODELOS
+# 5. ENTRENAMIENTO DE MODELOS MEJORADO
 # ==============================
 
 print("\n" + "="*50)
-print("5. ENTRENAMIENTO DE MODELOS")
+print("5. ENTRENAMIENTO DE MODELOS MEJORADO")
 print("="*50)
 
-def entrenar_modelo(modelo, nombre, X_train, y_train, X_val, y_val, epochs=50, batch_size=32):
+def entrenar_modelo(modelo, nombre, X_train, y_train, X_val, y_val, epochs=100, batch_size=64):  # MEJORA: Más épocas, batch_size mayor
     """
     Entrena un modelo y retorna el historial de entrenamiento
     """
@@ -274,11 +399,20 @@ def entrenar_modelo(modelo, nombre, X_train, y_train, X_val, y_val, epochs=50, b
     print(f"ENTRENANDO MODELO: {nombre}")
     print(f"{'='*60}")
     
-    # Callbacks para entrenamiento
+    # Callbacks para entrenamiento MEJORADOS
     early_stopping = EarlyStopping(
         monitor='val_loss',
-        patience=10,
+        patience=15,  # MEJORA: Mayor paciencia (15 en lugar de 10)
         restore_best_weights=True,
+        verbose=1
+    )
+    
+    # MEJORA: Añadir reducción de tasa de aprendizaje
+    reduce_lr = ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.5,  # Reducir LR a la mitad cuando se estanca
+        patience=5,
+        min_lr=0.00001,
         verbose=1
     )
     
@@ -288,16 +422,16 @@ def entrenar_modelo(modelo, nombre, X_train, y_train, X_val, y_val, epochs=50, b
         validation_data=(X_val, y_val),
         epochs=epochs,
         batch_size=batch_size,
-        callbacks=[early_stopping],
+        callbacks=[early_stopping, reduce_lr],  # Añadido reduce_lr
         verbose=1
     )
     
     return historia
 
-# Entrenar cada modelo
+# Entrenar cada modelo con hiperparámetros mejorados
 historias = {}
-epochs = 50
-batch_size = 32
+epochs = 100  # MEJORA: Más épocas, con early stopping
+batch_size = 64  # MEJORA: Batch size mayor
 
 for nombre, modelo in modelos.items():
     historias[nombre] = entrenar_modelo(
@@ -457,6 +591,7 @@ for bar, score in zip(bars, r2_scores):
                    f'{score:.3f}', ha='center', va='bottom', fontweight='bold')
 
 plt.tight_layout()
+plt.savefig('comparacion_modelos_mejorados.png', dpi=300)
 plt.show()
 
 # Gráfico 2: Predicciones vs Valores Reales
@@ -502,6 +637,7 @@ for i, (name, color) in enumerate(zip(modelos.keys(), colors)):
                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
 plt.tight_layout()
+plt.savefig('predicciones_vs_real_mejorado.png', dpi=300)
 plt.show()
 
 # Gráfico 3: Análisis de residuos
@@ -528,6 +664,7 @@ for i, (name, color) in enumerate(zip(modelos.keys(), colors)):
     axes[i].legend()
 
 plt.tight_layout()
+plt.savefig('analisis_residuos_mejorado.png', dpi=300)
 plt.show()
 
 # ==============================
@@ -535,7 +672,7 @@ plt.show()
 # ==============================
 
 print("\n" + "="*80)
-print("ANÁLISIS COMPARATIVO FINAL")
+print("ANÁLISIS COMPARATIVO FINAL (MODELOS MEJORADOS)")
 print("="*80)
 
 print("\n1. RENDIMIENTO GENERAL:")
@@ -554,25 +691,41 @@ for metric in ['RMSE', 'MAE', 'MAPE', 'R²']:
         best = min(resultados.keys(), key=lambda x: resultados[x][metric])
         print(f"{metric:8s}: {best:4s} ({resultados[best][metric]:7.4f})")
 
-print("\n3. CARACTERÍSTICAS DE CADA MODELO:")
+print("\n3. CARACTERÍSTICAS DE CADA MODELO MEJORADO:")
 print("-" * 40)
 
-print("RNN (Simple):")
-print("  ✓ Más rápido de entrenar")
-print("  ✗ Problemas con dependencias largas")
-print("  ✗ Desvanecimiento del gradiente")
+print("RNN (Simple) Mejorado:")
+print("  ✓ Más rápido de entrenar que LSTM/GRU")
+print("  ✓ Arquitectura más profunda con BatchNorm")
+print("  ✓ Regularización L2 para evitar sobreajuste")
+print("  ✗ Sigue con limitaciones en dependencias temporales largas")
 
-print("\nLSTM:")
+print("\nLSTM Mejorado:")
 print("  ✓ Maneja dependencias a largo plazo")
-print("  ✓ Controla el flujo de información")
-print("  ✗ Más parámetros (más lento)")
+print("  ✓ Controla el flujo de información con puertas")
+print("  ✓ Mayor capacidad de aprendizaje")
+print("  ✗ Más parámetros y tiempo de entrenamiento")
 
-print("\nGRU:")
-print("  ✓ Compromiso entre RNN y LSTM")
-print("  ✓ Menos parámetros que LSTM")
-print("  ✓ Rendimiento similar a LSTM")
+print("\nGRU Mejorado con Bidireccional:")
+print("  ✓ Arquitectura bidireccional captura patrones en ambos sentidos")
+print("  ✓ Tres capas recurrentes para mayor poder de modelado")
+print("  ✓ Mejor equilibrio entre capacidad y eficiencia")
+print("  ✓ BatchNormalization para mejor convergencia")
 
-print("\n4. NÚMERO DE PARÁMETROS:")
+print("\n4. MEJORAS IMPLEMENTADAS:")
+print("-" * 40)
+print("• Características adicionales (tendencias históricas, popularidad por género)")
+print("• Ventana temporal (lookback) aumentada a 8 canciones")
+print("• Data augmentation para conjunto de entrenamiento")
+print("• StandardScaler en lugar de MinMaxScaler para características")
+print("• Arquitecturas más profundas con BatchNormalization")
+print("• Capas bidireccionales en GRU")
+print("• Regularización L2 para evitar sobreajuste")
+print("• Learning rate scheduling")
+print("• Early stopping con mayor paciencia")
+print("• Batch size optimizado")
+
+print("\n5. NÚMERO DE PARÁMETROS:")
 print("-" * 40)
 for name, model in modelos.items():
     params = model.count_params()
@@ -581,3 +734,8 @@ for name, model in modelos.items():
 print("\n" + "="*80)
 print(f"¡ANÁLISIS COMPLETADO! El modelo recomendado para predecir popularidad musical es: {mejor_modelo_general}")
 print("="*80)
+
+# Guardar el mejor modelo
+mejor_modelo = modelos[mejor_modelo_general]
+mejor_modelo.save(f'mejor_modelo_popularidad_{mejor_modelo_general}.h5')
+print(f"\nEl mejor modelo ({mejor_modelo_general}) ha sido guardado como 'mejor_modelo_popularidad_{mejor_modelo_general}.h5'")
